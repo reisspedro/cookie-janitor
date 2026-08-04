@@ -50,6 +50,7 @@ let filtroBucket = 'todos';
 let limiteLinhas = LINHAS_POR_PAGINA;
 let analisando = false;
 let ultimoErroHistorico = '';
+let cobertura = null;   // o quanto o histórico alcança — explica os "sem registro"
 
 const $ = (id) => document.getElementById(id);
 const janelaAtual = () => Number($('janela').value);
@@ -73,6 +74,27 @@ function dominioBase(host) {
   if (SUFIXOS_PUBLICOS.has(dois)) return tres;
   if (p[p.length - 1].length === 2 && SEGUNDO_NIVEL.includes(p[p.length - 2])) return tres;
   return dois;
+}
+
+// "Sem registro" tem causas diferentes e o usuário merece saber qual é a dele:
+// histórico curto demais (apagado/expirado) não é a mesma coisa que site que
+// você realmente não visita, nem que cookie de terceiro.
+function motivoSemRegistro() {
+  if (!cobertura || !cobertura.maisAntiga) {
+    return 'Não foi possível ler o histórico do navegador, então não dá para saber quando '
+      + 'você visitou este site. Clique em "Diagnóstico" para ver o motivo.';
+  }
+  const dias = Math.max(0, Math.round((Date.now() - cobertura.maisAntiga) / DIA));
+  if (dias < RETENCAO_DIAS * 0.9) {
+    return `Seu histórico só vai até ${dataHora(cobertura.maisAntiga)} — cerca de ${dias} `
+      + `dia${dias === 1 ? '' : 's'}. Este site não aparece nesse período, e não existe registro `
+      + 'anterior para consultar: ou ele foi apagado, ou ainda não acumulou. '
+      + 'Conforme você navegar, esta coluna vai se preencher sozinha.';
+  }
+  return `Você tem cerca de ${dias} dias de histórico e este site não aparece em nenhum deles. `
+    + `Ou você não o abre há mais de ${dias} dias — e aí a primeira visita é ainda mais antiga, `
+    + 'porque o navegador não guarda além disso — ou o cookie veio de conteúdo incorporado '
+    + '(anúncio, player de vídeo, botão de rede social) sem você entrar no site.';
 }
 
 // Ícone de informação com balão no hover. Usa elemento próprio em vez de
@@ -176,14 +198,26 @@ async function lerHistorico() {
       + 'Provável build sem suporte a Promise nessa API.');
   }
   const porDominio = new Map();
+  let maisAntiga = Infinity;
+  let paginas = 0;
   for (const it of itens) {
-    let host;
-    try { host = new URL(it.url).hostname; } catch { continue; }
-    const d = dominioBase(host);
+    let u;
+    try { u = new URL(it.url); } catch { continue; }
+    // chrome-extension://, file://, about: etc. não são sites — a própria
+    // página deste painel aparecia na lista e inflava a contagem.
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') continue;
+    const d = dominioBase(u.hostname);
     if (!porDominio.has(d)) porDominio.set(d, []);
     porDominio.get(d).push(it);
+    paginas++;
+    if (it.lastVisitTime && it.lastVisitTime < maisAntiga) maisAntiga = it.lastVisitTime;
   }
-  return { porDominio, truncado: itens.length >= TETO_HISTORICO, paginas: itens.length };
+  return {
+    porDominio,
+    truncado: itens.length >= TETO_HISTORICO,
+    paginas,
+    maisAntiga: maisAntiga === Infinity ? null : maisAntiga
+  };
 }
 
 // `search` só devolve a última visita de cada página; `getVisits` devolve todas.
@@ -194,7 +228,7 @@ async function medirDominios(lista, aoProgredir) {
   const out = new Map();
   let orcamento = ORCAMENTO_VISITAS;
 
-  let hist = { porDominio: new Map(), truncado: false, paginas: 0 };
+  let hist = { porDominio: new Map(), truncado: false, paginas: 0, maisAntiga: null };
   let falhouHistorico = false;
   // Engolir a mensagem aqui foi o que escondeu a causa por duas rodadas:
   // o painel dizia "sem registro" tanto para histórico vazio quanto para
@@ -208,6 +242,11 @@ async function medirDominios(lista, aoProgredir) {
   if (!falhouHistorico && !hist.paginas) {
     ultimoErroHistorico = 'chrome.history.search respondeu, mas devolveu 0 páginas.';
   }
+  cobertura = {
+    paginas: hist.paginas,
+    dominios: hist.porDominio.size,
+    maisAntiga: hist.maisAntiga
+  };
 
   for (let i = 0; i < lista.length; i++) {
     const dominio = lista[i];
@@ -232,7 +271,19 @@ async function medirDominios(lista, aoProgredir) {
     const amostra = paginas.slice(0, URLS_AMOSTRADAS);
     const completo = paginas.length <= URLS_AMOSTRADAS && !hist.truncado;
 
-    let primeira = Infinity, ultima = 0, visitas = 0;
+    // O piso vem SEMPRE do search: cada página já sabe a própria última visita.
+    // getVisits depois só alarga esses limites. Antes o piso era alternativa ao
+    // getVisits, então bastava uma página responder para as outras, que falharam,
+    // não contribuírem com nada.
+    let primeira = Infinity, ultima = 0;
+    for (const p of paginas) {
+      const t = p.lastVisitTime || 0;
+      if (!t) continue;
+      if (t < primeira) primeira = t;
+      if (t > ultima) ultima = t;
+    }
+
+    let visitas = 0;
     const dias = new Set();
     let mediuVisitas = false;
 
@@ -252,20 +303,13 @@ async function medirDominios(lista, aoProgredir) {
       }
     }
 
-    // Sem getVisits (orçamento estourado ou API recusou), o lastVisitTime de
-    // cada página ainda dá um piso honesto — some o ⚠ nunca, os números são
-    // mínimos. Melhor um piso do que uma coluna vazia.
+    // Nenhuma visita detalhada: conta pelo que o search entregou, que é piso.
     if (!mediuVisitas) {
       for (const p of paginas) {
         const t = p.lastVisitTime || 0;
-        if (!t) continue;
-        if (t < primeira) primeira = t;
-        if (t > ultima) ultima = t;
-        if (t >= corte) { visitas++; dias.add(Math.floor((agora - t) / DIA)); }
+        if (t && t >= corte) { visitas++; dias.add(Math.floor((agora - t) / DIA)); }
       }
     }
-
-    if (!ultima) ultima = paginas[0].lastVisitTime || 0;
     out.set(dominio, {
       primeira: primeira === Infinity ? null : primeira,
       ultima: ultima || null,
@@ -343,14 +387,35 @@ async function analisar() {
         + 'Clique em "Diagnóstico" e me mande o resultado.',
         'erro'
       );
+    } else if (!cookies.length) {
+      setStatus('Nenhum cookie encontrado. Se isso parece errado, recarregue a extensão em brave://extensions.', 'erro');
     } else {
+      // Coluna de data vazia quase sempre é histórico curto, não falha. Dizer
+      // o alcance do histórico transforma "sumiu" em "não existe o dado".
+      let alcance = '';
+      if (cobertura) {
+        const dias = cobertura.maisAntiga
+          ? Math.max(0, Math.round((Date.now() - cobertura.maisAntiga) / DIA))
+          : 0;
+        alcance = `\nSeu histórico tem ${cobertura.paginas} páginas em ${cobertura.dominios} domínios`
+          + (cobertura.maisAntiga
+            ? `, a mais antiga de ${dataHora(cobertura.maisAntiga)}${dias < 2 ? ' — ou seja, menos de um dia' : ` (${dias} dias)`}.`
+            : '.');
+        if (semRegistro) {
+          alcance += `\n${semRegistro} domínios ficam "sem registro" porque o histórico não vai tão longe`
+            + ' — não é falha da extensão, é dado que não existe.';
+        }
+        if (dias < 3 && semRegistro > dominios.length / 2) {
+          alcance += '\n💡 Um histórico tão curto costuma ser sinal de "limpar dados de navegação" recente,'
+            + ' ou de limpeza automática ligada. Confira em brave://settings/clearBrowserData.'
+            + ' A partir de agora a extensão vai ficando mais útil conforme o histórico acumula.';
+        }
+      }
       setStatus(
-        cookies.length
-          ? `${cookies.length} cookies em ${dominios.length} domínios. ` +
-            `${semRegistro} sem registro no histórico — nada vem marcado, a escolha é sua.` +
-            (precisaRecarregar ? ' ⚠️ Recarregue a extensão em brave://extensions para ativar protegidos salvos e limpeza de dados de site.' : '')
-          : 'Nenhum cookie encontrado. Se isso parece errado, recarregue a extensão em brave://extensions.',
-        cookies.length && !precisaRecarregar ? 'ok' : 'erro'
+        `${cookies.length} cookies em ${dominios.length} domínios. Nada vem marcado, a escolha é sua.`
+        + alcance
+        + (precisaRecarregar ? '\n⚠️ Recarregue a extensão em brave://extensions para ativar protegidos salvos e limpeza de dados de site.' : ''),
+        precisaRecarregar ? 'erro' : 'ok'
       );
     }
   } catch (e) {
@@ -575,7 +640,10 @@ function render() {
         + 'só não dá para saber a data exata.'
       ));
     } else {
-      tdPrimeira.textContent = '—';
+      const r = document.createElement('div');
+      r.textContent = 'indisponível';
+      r.className = 'indisp';
+      tdPrimeira.append(r, comInfo(motivoSemRegistro()));
     }
 
     const tdUltima = document.createElement('td');
@@ -588,7 +656,10 @@ function render() {
       tdUltima.append(r, e);
       tdUltima.title = 'Última visita registrada no histórico.';
     } else {
-      tdUltima.textContent = 'sem registro';
+      const r = document.createElement('div');
+      r.textContent = 'sem registro';
+      r.className = 'indisp';
+      tdUltima.append(r, comInfo(motivoSemRegistro()));
     }
 
     const tdUso = document.createElement('td');

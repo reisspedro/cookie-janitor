@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "96",
   "name": "Cookie Janitor",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Painel de faxina de cookies: cruza cookies com seu histórico, mostra o que você não usa e deleta com backup.",
   "permissions": ["cookies", "history", "storage", "browsingData"],
   "host_permissions": ["<all_urls>"],
