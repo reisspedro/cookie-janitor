@@ -504,7 +504,11 @@ async function deletar() {
   if (!alvos.length) return;
   const cookies = alvos.flatMap((d) => d.cookies);
 
-  if (!confirm(`Deletar ${cookies.length} cookies de ${alvos.length} domínios?\n\nVocê será deslogado desses sites.`)) return;
+  const aviso = $('opt-backup').checked
+    ? '\n\nO backup vai guardar o VALOR de cada cookie — suas sessões logadas. ' +
+      'Ele cai em Downloads em texto puro: trate como arquivo de senha e apague depois.'
+    : '';
+  if (!confirm(`Deletar ${cookies.length} cookies de ${alvos.length} domínios?\n\nVocê será deslogado desses sites.${aviso}`)) return;
 
   $('deletar').disabled = true;
   try {

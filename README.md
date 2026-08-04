@@ -1,101 +1,123 @@
 # 🧹 Cookie Janitor
 
-Extensão de navegador (Manifest V3, Chrome/Brave/Edge) que responde uma pergunta simples:
-**quais sites guardam cookies no seu navegador sem você usar mais?**
+A browser extension (Manifest V3 — Chrome, Brave, Edge) that answers one simple question:
+**which sites keep cookies in your browser that you no longer use?**
 
-Ela cruza todos os cookies com o seu histórico e separa recência de frequência — porque são
-coisas diferentes: tem site que você visitou ontem mas só usou uma vez no mês.
+It cross-references every cookie with your browsing history and separates *recency* from
+*frequency* — because they are different things: some site you visited yesterday but only
+opened once all month.
 
-![painel](icones/icone-128.png)
+![panel](icones/icone-128.png)
 
-## O que o painel mostra
+> **Interface language:** the UI is currently in Brazilian Portuguese. Everything documented
+> here works the same regardless; `_locales` support is planned. Issues and PRs in English are
+> welcome.
 
-Para cada domínio que guarda cookie, três medidas independentes:
+## What the panel shows
 
-- **Primeira visita** — desde quando esse site existe na sua vida, com data e hora.
-- **Última visita** — quando foi a última vez, com data e hora.
-- **Uso na janela** — quantas visitas e em quantos dias distintos nos últimos 7 ou 30 dias.
+For every domain holding a cookie, three independent measures:
 
-A situação vem da recência:
+- **First visit** — how far back this site goes in your life, with date and time.
+- **Last visit** — when you were last there, with date and time.
+- **Usage in window** — how many visits, across how many distinct days, in the last 7 or 30 days.
 
-| Situação | Critério |
+Status comes from recency:
+
+| Status | Criterion |
 |---|---|
-| `ativo` | visitado nos últimos 30 dias |
-| `ocioso` | 31 a 90 dias sem visita |
-| `antigo` | 91+ dias sem visita |
-| `sem registro` | nenhuma visita encontrada no histórico |
+| `active` | visited in the last 30 days |
+| `idle` | 31–90 days without a visit |
+| `old` | 91+ days without a visit |
+| `no record` | no visit found in history |
 
-E a frequência é classificada em `frequente`, `regular` e **`usei pouco`** — o cruzamento que
-revela o caso interessante: o site que você abriu recentemente mas quase não usou.
+Frequency is classified as `frequent`, `regular` and **`barely used`** — the cross-reference
+that reveals the interesting case: a site you opened recently but hardly ever used.
 
-`sem registro` **não** significa abandonado: pode ser histórico limpo, navegação anônima ou
-cookie vindo de conteúdo incorporado. Por isso nada vem pré-selecionado — marcar é sempre ato
-explícito seu.
+`no record` does **not** mean abandoned: it can be cleared history, private browsing, or a
+cookie set by embedded content. That is why nothing is pre-selected — ticking a box is always
+an explicit act on your part.
 
-## Segurança
+## ⚠️ About the backup file
 
-Deletar cookie desloga você do site, então há três travas:
+Before deleting, the extension can save a backup. **That backup contains the `value` of every
+cookie — which is to say, live session credentials.** Anyone holding that file can replay your
+logged-in sessions for as long as those cookies remain valid.
 
-1. **Nada vem pré-selecionado.** Marcar é sempre ato explícito.
-2. **Lista de protegidos** — domínios que nunca ficam selecionáveis. Já vem com gov.br, bancos
-   (BB, Caixa, Itaú, Bradesco, Santander, Nubank, Inter, C6), PicPay, Mercado Pago, PayPal e
-   Binance. Editável pelo cadeado de cada linha e salva localmente.
-3. **Backup duplo** — antes de deletar, baixa um `.json` e guarda uma cópia dentro da própria
-   extensão, porque o download pode ser bloqueado pelo navegador. *Desfazer última limpeza*
-   usa essa cópia; *Restaurar de arquivo* usa o `.json`.
-4. **Confirmação** informando quantos cookies e domínios serão afetados, e relatório honesto
-   depois: quantos foram apagados, quantos já não existiam e quantos falharam.
+Consequences worth taking seriously:
 
-Opcionalmente apaga também localStorage, IndexedDB, cache e service workers dos domínios
-selecionados (desligado por padrão).
+- The `.json` lands in your **Downloads folder in plain text**. Treat it exactly like a
+  password file: don't sync it, don't attach it to an issue, don't paste it into a chat, and
+  delete it once you're satisfied with the cleanup.
+- A second copy is kept inside the extension (`chrome.storage.local`) so *Undo last cleanup*
+  still works if the download was blocked. It is unencrypted and stays until overwritten.
+- `cookies-backup-*.json` is in `.gitignore` so it never reaches a commit by accident.
 
-## Instalar
+If you don't want either copy, untick **Backup before deleting** — you just lose the undo.
 
-1. Abra `brave://extensions` (ou `chrome://extensions`)
-2. Ligue o **Modo de desenvolvedor**
-3. **Carregar sem compactação** e selecione esta pasta
-4. Clique no ícone do cookie → **Abrir painel**
+## Safety
 
-Ao trocar de versão, use o botão de recarregar no card da extensão — permissões novas no
-manifest só passam a valer depois do reload.
+Deleting a cookie logs you out of that site, so there are four brakes:
 
-## Permissões
+1. **Nothing is pre-selected.** Ticking is always explicit.
+2. **Protected list** — domains that can never be selected. Ships with Brazilian government
+   and banking domains, plus PayPal and Binance. Editable via the padlock on each row, saved
+   locally.
+3. **Double backup** — see the warning above.
+4. **Confirmation** stating how many cookies and domains are affected, and an honest report
+   afterwards: how many were deleted, how many no longer existed, how many failed.
 
-| Permissão | Para quê |
+It can optionally also clear localStorage, IndexedDB, cache and service workers for the
+selected domains (off by default).
+
+## Install
+
+1. Open `chrome://extensions` (or `brave://extensions`)
+2. Enable **Developer mode**
+3. **Load unpacked** and select this folder
+4. Click the cookie icon → **Open panel**
+
+When upgrading, hit reload on the extension card — new manifest permissions only take effect
+after a reload.
+
+## Permissions
+
+| Permission | Why |
 |---|---|
-| `cookies` | ler e apagar cookies |
-| `history` | descobrir quais sites você visitou e com que frequência |
-| `storage` | guardar a lista de protegidos e a data da última faxina |
-| `browsingData` | apagar dados de site (só quando a opção é marcada) |
-| `<all_urls>` | sem isso o navegador só entrega os cookies da aba aberta |
+| `cookies` | read and delete cookies |
+| `history` | find out which sites you visited and how often |
+| `storage` | keep the protected list and the last-cleanup date |
+| `browsingData` | clear site data (only when that option is ticked) |
+| `<all_urls>` | without it the browser only hands over cookies for the active tab |
 
-**Nenhuma requisição de rede é feita.** Tudo roda local; nada sai da máquina.
+**No network request is ever made.** Everything runs locally; nothing leaves your machine.
+There is no `fetch`, `XMLHttpRequest`, `WebSocket` or `sendBeacon` anywhere in the source —
+grep for them.
 
-## Como as medidas são feitas
+## How the measurements work
 
-`chrome.history.search` devolve **uma entrada por página, com a última visita dela** — não a
-lista de visitas. Contar frequência varrendo janelas de tempo com ele produz número errado, e
-sem `startTime: 0` a busca só enxerga as últimas 24 horas.
+`chrome.history.search` returns **one entry per page, carrying that page's last visit** — not
+a list of visits. Counting frequency by sweeping time windows with it produces wrong numbers,
+and without `startTime: 0` the search only sees the last 24 hours.
 
-Aqui cada domínio é resolvido em duas etapas: `search` com `startTime: 0` lista as páginas
-daquele host, e `chrome.history.getVisits` devolve **todas as visitas de cada página**, com
-horário. É de lá que saem a primeira visita, a última exata e a contagem da janela.
+Here each domain is resolved in two steps: `search` with `startTime: 0` lists the pages for
+that host, and `chrome.history.getVisits` returns **every visit of every page**, timestamped.
+That is where first visit, exact last visit and the window count come from.
 
-Quando um domínio tem mais páginas do que dá para ler dentro do orçamento de consultas, a linha
-recebe um **⚠** e os números devem ser lidos como piso, nunca como total.
+When a domain has more pages than the query budget allows, the row gets a **⚠** and its
+numbers should be read as a floor, never a total.
 
-## Agrupamento de domínios
+## Domain grouping
 
-Cookies são agrupados pelo domínio registrável, e errar esse limite seria grave: juntar
-`alice.github.io` com `bob.github.io` faria uma seleção apagar cookies de dois sites
-independentes. Então IPv4, IPv6, `localhost` e hosts de um rótulo ficam inteiros, há uma lista
-de sufixos públicos (`co.uk`, `com.br`) e de hospedagens onde cada subdomínio é um site
-(`github.io`, `vercel.app`, `netlify.app`), e uma regra genérica para ccTLDs.
+Cookies are grouped by registrable domain, and getting that boundary wrong would be serious:
+merging `alice.github.io` with `bob.github.io` would make one selection delete cookies for two
+independent sites. So IPv4, IPv6, `localhost` and single-label hosts are kept whole; there is
+a list of public suffixes (`co.uk`, `com.br`) and of hosting domains where each subdomain is
+its own site (`github.io`, `vercel.app`, `netlify.app`); plus a generic ccTLD rule.
 
-Não é a [Public Suffix List](https://publicsuffix.org/) completa. Na dúvida a extensão agrupa
-**menos**, mantendo hosts separados — errar para o lado de mostrar duas linhas é inofensivo;
-errar para o lado de juntar sites independentes apagaria dados que você não escolheu.
+This is not the full [Public Suffix List](https://publicsuffix.org/). When in doubt the
+extension groups **less**, keeping hosts separate — erring toward showing two rows is
+harmless; erring toward merging independent sites would delete data you never chose.
 
-## Licença
+## License
 
 MIT
