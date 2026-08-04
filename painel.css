@@ -162,6 +162,38 @@ tr.protegido td.dom { color: var(--ok); }
 .tag.morto { background: var(--morto); color: #fff; }
 
 .exato { font-size: 11px; color: var(--txt-fraco); font-variant-numeric: tabular-nums; }
+.indisp { color: var(--txt-fraco); font-style: italic; }
+
+/* ---- ícone de info com balão ---- */
+.info {
+  display: inline-block;
+  margin-left: 5px;
+  color: var(--acento);
+  cursor: help;
+  position: relative;
+  font-size: 12px;
+  line-height: 1;
+}
+.info .dica {
+  display: none;
+  position: absolute;
+  left: 0;
+  top: calc(100% + 7px);
+  z-index: 20;
+  width: 260px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: #0d0f13;
+  border: 1px solid var(--acento);
+  color: var(--txt);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.45;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .55);
+}
+.info:hover .dica, .info:focus .dica { display: block; }
+/* perto da borda direita o balão sairia da tela */
+tbody tr td:nth-last-child(-n+3) .info .dica { left: auto; right: 0; }
 
 /* ---- célula de uso (frequência na janela) ---- */
 .uso-cel { display: flex; flex-direction: column; gap: 3px; }
@@ -203,6 +235,8 @@ tr.protegido td.dom { color: var(--ok); }
   border: 1px solid var(--linha);
   font-size: 13px;
   margin-bottom: 14px;
+  white-space: pre-wrap;      /* o diagnóstico vem em várias linhas */
+  user-select: text;
 }
 #status.erro { border-color: var(--morto); }
 #status.ok { border-color: var(--ok); }
