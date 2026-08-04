@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Cookie Janitor — painel</title>
+<link rel="stylesheet" href="painel.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header class="topo">
+    <div>
+      <h1>🧹 Cookie Janitor</h1>
+      <div class="sub">Cruza os cookies do navegador com seu histórico: quando você visitou e o quanto usa.</div>
+    </div>
+    <button id="reanalisar" class="primario">Reanalisar</button>
+  </header>
+
+  <div id="status">Lendo cookies e histórico…</div>
+
+  <section class="cards">
+    <div class="card"><div class="n" id="c-cookies">—</div><div class="rot">cookies</div></div>
+    <div class="card"><div class="n" id="c-dominios">—</div><div class="rot">domínios</div></div>
+    <div class="card destaque"><div class="n" id="c-mortos">—</div><div class="rot">sem visita há 90+ dias</div></div>
+    <div class="card"><div class="n" id="c-pouco">—</div><div class="rot">pouco usados (30d)</div></div>
+    <div class="card"><div class="n" id="c-recuperaveis">—</div><div class="rot">cookies removíveis</div></div>
+    <div class="card"><div class="n" id="c-protegidos">—</div><div class="rot">protegidos</div></div>
+  </section>
+
+  <div class="barra" id="barra"></div>
+  <div class="legenda">
+    <span style="--cor: var(--ok)">Ativo (até 30 dias)</span>
+    <span style="--cor: var(--morno)">Ocioso (31–90 dias)</span>
+    <span style="--cor: var(--frio)">Antigo (91+ dias)</span>
+    <span style="--cor: var(--morto)">Nunca visitado</span>
+  </div>
+
+  <div class="controles">
+    <input type="search" id="busca" placeholder="Filtrar domínio…">
+    <select id="janela" title="Janela usada nas colunas de uso">
+      <option value="30">Uso nos últimos 30 dias</option>
+      <option value="7">Uso nos últimos 7 dias</option>
+    </select>
+    <select id="uso" title="Filtrar por frequência de uso">
+      <option value="todos">Frequência: qualquer</option>
+      <option value="frequente">Só frequentes</option>
+      <option value="regular">Só regulares</option>
+      <option value="raro">Só raros (pouco usados)</option>
+      <option value="nenhum">Só sem uso na janela</option>
+    </select>
+    <select id="ordem">
+      <option value="tempo">Ordenar: mais abandonado</option>
+      <option value="menos-usado">Ordenar: menos usado</option>
+      <option value="cookies">Ordenar: mais cookies</option>
+      <option value="nome">Ordenar: alfabética</option>
+    </select>
+  </div>
+
+  <div class="controles">
+    <button id="sel-mortos">Marcar abandonados</button>
+    <button id="sel-pouco">Marcar pouco usados</button>
+    <button id="sel-nenhum">Desmarcar tudo</button>
+  </div>
+
+  <div class="chips" id="chips">
+    <button class="chip on" data-bucket="todos">Todos</button>
+    <button class="chip" data-bucket="ativo">Ativos</button>
+    <button class="chip" data-bucket="ocioso">Ociosos</button>
+    <button class="chip" data-bucket="antigo">Antigos</button>
+    <button class="chip" data-bucket="morto">Nunca visitados</button>
+    <button class="chip" data-bucket="pouco">🎯 Usei pouco</button>
+    <button class="chip" data-bucket="protegido">🔒 Protegidos</button>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:34px"></th>
+        <th style="width:30px"></th>
+        <th>Domínio</th>
+        <th class="num" style="width:80px">Cookies</th>
+        <th style="width:140px">Última visita</th>
+        <th style="width:170px">Uso na janela</th>
+        <th class="num" style="width:90px">Visitas</th>
+        <th style="width:115px">Situação</th>
+      </tr>
+    </thead>
+    <tbody id="corpo"></tbody>
+  </table>
+  <div class="vazio" id="vazio" hidden>Nada aqui com esse filtro.</div>
+
+</div>
+
+<div class="acoes">
+  <span class="selinfo" id="selinfo">Nenhum domínio selecionado</span>
+  <label><input type="checkbox" id="opt-backup" checked> Backup antes de deletar</label>
+  <label><input type="checkbox" id="opt-sitedata"> Apagar também dados do site (localStorage, cache, IndexedDB)</label>
+  <button id="restaurar">Restaurar backup…</button>
+  <input type="file" id="arquivo" accept="application/json" hidden>
+  <button id="deletar" class="perigo" disabled>Deletar selecionados</button>
+</div>
+
+<script src="dashboard.js"></script>
+</body>
+</html>

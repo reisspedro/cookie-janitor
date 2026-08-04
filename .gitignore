@@ -1,0 +1,4 @@
+cookies-backup-*.json
+*.zip
+.DS_Store
+Thumbs.db
