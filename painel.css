@@ -238,7 +238,7 @@ tbody tr td:nth-last-child(-n+3) .info .dica { left: auto; right: 0; }
   border: 1px solid var(--linha);
   font-size: 13px;
   margin-bottom: 14px;
-  white-space: pre-wrap;      /* o diagnóstico vem em várias linhas */
+  white-space: pre-wrap;      /* o resumo do histórico vem em várias linhas */
   user-select: text;
 }
 #status.erro { border-color: var(--morto); }

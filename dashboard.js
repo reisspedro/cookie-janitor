@@ -82,7 +82,7 @@ function dominioBase(host) {
 function motivoSemRegistro() {
   if (!cobertura || !cobertura.maisAntiga) {
     return 'Não foi possível ler o histórico do navegador, então não dá para saber quando '
-      + 'você visitou este site. Clique em "Diagnóstico" para ver o motivo.';
+      + 'você visitou este site. O motivo aparece na faixa de status, no topo do painel.';
   }
   const dias = Math.max(0, Math.round((Date.now() - cobertura.maisAntiga) / DIA));
   if (dias < RETENCAO_DIAS * 0.9) {
@@ -384,7 +384,7 @@ async function analisar() {
       setStatus(
         `${cookies.length} cookies em ${dominios.length} domínios, mas o HISTÓRICO NÃO VEIO: `
         + `${ultimoErroHistorico} — por isso as colunas de data estão vazias. `
-        + 'Clique em "Diagnóstico" e me mande o resultado.',
+        + 'Confira se o histórico existe em brave://history e se a extensão foi recarregada.',
         'erro'
       );
     } else if (!cookies.length) {
@@ -493,85 +493,6 @@ async function limparAlvo() {
   } finally {
     $('limpar-alvo').disabled = false;
   }
-}
-
-// ---------------------------------------------------------------- diagnóstico
-
-// Testa cada degrau isoladamente, do mais básico ao mais específico, e diz
-// em qual deles o dado some. Existe porque "coluna vazia" tem cinco causas
-// possíveis e adivinhar entre elas já custou duas rodadas.
-async function diagnosticar() {
-  const L = [];
-  const diga = (t) => { L.push(t); setStatus('Diagnóstico rodando…\n' + L.join('\n')); };
-
-  diga(`navegador: ${navigator.userAgent}`);
-  diga(`chrome.history existe? ${typeof chrome.history}`);
-  diga(`chrome.cookies existe? ${typeof chrome.cookies}`);
-
-  if (typeof chrome.history !== 'object') {
-    diga('PAROU AQUI: sem a API de histórico. Recarregue a extensão em brave://extensions.');
-    return setStatus(L.join('\n'), 'erro');
-  }
-
-  // 1) a chamada devolve Promise ou exige callback?
-  try {
-    const r = chrome.history.search({ text: '', startTime: 0, maxResults: 1 });
-    diga(`search() devolve: ${r && typeof r.then === 'function' ? 'Promise (ok)' : typeof r + ' (NÃO é Promise — precisa de callback)'}`);
-    const v = await r;
-    diga(`search(maxResults:1) → ${Array.isArray(v) ? v.length + ' item(ns)' : 'tipo ' + typeof v}`);
-  } catch (e) { diga(`search(1) ERRO: ${e.message}`); }
-
-  // 2) o teto grande é aceito?
-  let itens = [];
-  for (const teto of [1000, TETO_HISTORICO]) {
-    try {
-      const v = await chrome.history.search({ text: '', startTime: 0, maxResults: teto });
-      diga(`search(maxResults:${teto}) → ${Array.isArray(v) ? v.length + ' páginas' : 'tipo ' + typeof v}`);
-      if (Array.isArray(v) && v.length > itens.length) itens = v;
-    } catch (e) { diga(`search(${teto}) ERRO: ${e.message}`); }
-  }
-
-  // 3) sem startTime (o Chrome só olha 24h) — serve de controle
-  try {
-    const v = await chrome.history.search({ text: '', maxResults: 1000 });
-    diga(`search(sem startTime, só 24h) → ${Array.isArray(v) ? v.length + ' páginas' : 'tipo ' + typeof v}`);
-  } catch (e) { diga(`search(sem startTime) ERRO: ${e.message}`); }
-
-  if (!itens.length) {
-    diga('PAROU AQUI: o histórico voltou vazio em todas as variações.');
-    diga('Causas prováveis: histórico realmente limpo, ou o Brave está bloqueando a API.');
-    return setStatus(L.join('\n'), 'erro');
-  }
-
-  diga(`exemplo de URL do histórico: ${itens[0].url.slice(0, 80)}`);
-  diga(`lastVisitTime do exemplo: ${itens[0].lastVisitTime} → ${new Date(itens[0].lastVisitTime).toLocaleString('pt-BR')}`);
-
-  // 4) getVisits funciona na URL que o próprio search devolveu?
-  try {
-    const v = await chrome.history.getVisits({ url: itens[0].url });
-    diga(`getVisits(essa URL) → ${Array.isArray(v) ? v.length + ' visita(s)' : 'tipo ' + typeof v}`);
-    if (Array.isArray(v) && v.length) {
-      diga(`visitTime da 1ª: ${v[0].visitTime} → ${new Date(v[0].visitTime).toLocaleString('pt-BR')}`);
-    }
-  } catch (e) { diga(`getVisits ERRO: ${e.message}`); }
-
-  // 5) os domínios dos cookies casam com os do histórico?
-  const doHistorico = new Set();
-  for (const it of itens) {
-    try { doHistorico.add(dominioBase(new URL(it.url).hostname)); } catch { /* url estranha */ }
-  }
-  const cookies = await coletarCookies();
-  const dosCookies = new Set(cookies.map((c) => dominioBase(c.domain)));
-  const casaram = [...dosCookies].filter((d) => doHistorico.has(d));
-  diga(`domínios no histórico: ${doHistorico.size} · nos cookies: ${dosCookies.size} · que casam: ${casaram.length}`);
-  diga(`exemplos que casaram: ${casaram.slice(0, 5).join(', ') || '(nenhum)'}`);
-  if (!casaram.length) {
-    diga('PAROU AQUI: nenhum domínio de cookie bate com domínio do histórico — o defeito é no agrupamento.');
-    diga(`exemplos do histórico: ${[...doHistorico].slice(0, 5).join(', ')}`);
-    diga(`exemplos dos cookies:  ${[...dosCookies].slice(0, 5).join(', ')}`);
-  }
-
-  setStatus(L.join('\n') + '\n\n(selecione este texto e mande pro Ethan)', casaram.length ? 'ok' : 'erro');
 }
 
 // ---------------------------------------------------------------- render
@@ -992,9 +913,6 @@ const visiveisAgora = () => {
 $('reanalisar').addEventListener('click', analisar);
 $('limpar-alvo').addEventListener('click', limparAlvo);
 $('alvo').addEventListener('keydown', (e) => { if (e.key === 'Enter') limparAlvo(); });
-$('diagnostico').addEventListener('click', () => {
-  diagnosticar().catch((e) => setStatus(`Diagnóstico falhou: ${e && e.message ? e.message : e}`, 'erro'));
-});
 $('busca').addEventListener('input', reRender);
 $('ordem').addEventListener('change', reRender);
 $('uso').addEventListener('change', reRender);
