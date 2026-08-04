@@ -114,6 +114,9 @@ button.perigo { background: var(--morto); border-color: var(--morto); color: #ff
 button.perigo:hover:not(:disabled) { filter: brightness(1.1); }
 button.primario { background: var(--acento); border-color: var(--acento); color: #14161b; font-weight: 600; }
 
+.controles.alvo { padding: 10px 12px; border: 1px dashed var(--linha); border-radius: 10px; margin-bottom: 12px; }
+.controles.alvo .ajuda { font-size: 12px; color: var(--txt-fraco); cursor: help; }
+
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
 .chip {
   border-radius: 999px;

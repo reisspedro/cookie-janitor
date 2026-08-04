@@ -71,6 +71,12 @@
     <button id="sel-nenhum">Desmarcar tudo</button>
   </div>
 
+  <div class="controles alvo">
+    <input type="search" id="alvo" placeholder="Limpar um site específico (ex: site-suspeito.com)…">
+    <button id="limpar-alvo" class="perigo">Limpar tudo desse site</button>
+    <span class="ajuda" title="Apaga cookies, localStorage, IndexedDB, cache e Service Workers desse domínio e dos subdomínios. Use quando o antivírus apontar um site — a extensão não detecta ameaça, só limpa o que você mandar.">ⓘ para quando o antivírus apontar um site</span>
+  </div>
+
   <div class="chips" id="chips">
     <button class="chip on" data-bucket="todos">Todos</button>
     <button class="chip" data-bucket="ativo">Ativos</button>

@@ -427,6 +427,74 @@ async function analisar() {
   }
 }
 
+// Limpeza dirigida a um domínio que talvez nem tenha cookie — é o caso de
+// quando o antivírus aponta um site: o estrago costuma estar no Service Worker
+// e no CacheStorage, não no cookie. A extensão não detecta ameaça nenhuma
+// (não há API para ler cache de outra origem); ela só executa a limpeza.
+async function limparAlvo() {
+  const bruto = $('alvo').value.trim().toLowerCase()
+    .replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^\.+|\.+$/g, '');
+  if (!bruto) return setStatus('Escreva um domínio para limpar.', 'erro');
+  if (!/^[a-z0-9.-]+$/.test(bruto) || !bruto.includes('.')) {
+    return setStatus(`"${bruto}" não parece um domínio.`, 'erro');
+  }
+  if (protegidos.has(dominioBase(bruto))) {
+    return setStatus(`${bruto} está na lista de protegidos. Libere no cadeado antes.`, 'erro');
+  }
+  if (!chrome.browsingData) {
+    return setStatus('Faltam permissões. Recarregue a extensão em brave://extensions.', 'erro');
+  }
+  if (!confirm(
+    `Apagar TUDO de ${bruto} e subdomínios?\n\n`
+    + 'Cookies, localStorage, IndexedDB, cache, Service Workers e cache de Service Worker.\n\n'
+    + 'Você será deslogado desse site. Não há desfazer para dados de site.'
+  )) return;
+
+  $('limpar-alvo').disabled = true;
+  try {
+    // Cookies primeiro, para poder contar o que existia.
+    let apagados = 0;
+    try {
+      const todos = await chrome.cookies.getAll({});
+      for (const c of todos) {
+        const h = c.domain.replace(/^\./, '');
+        if (h !== bruto && !h.endsWith('.' + bruto)) continue;
+        const alvo = { url: urlDoCookie(c), name: c.name, storeId: c.storeId };
+        if (c.partitionKey) alvo.partitionKey = c.partitionKey;
+        try { if (await chrome.cookies.remove(alvo)) apagados++; } catch { /* segue */ }
+      }
+    } catch { /* sem cookies dá pra seguir: o alvo é o dado de site */ }
+
+    // `origins` não cobre subdomínio sozinho — cada host precisa entrar.
+    const origens = new Set([`https://${bruto}`, `http://${bruto}`, `https://www.${bruto}`, `http://www.${bruto}`]);
+    for (const d of dominios) {
+      for (const c of d.cookies) {
+        const h = c.domain.replace(/^\./, '');
+        if (h === bruto || h.endsWith('.' + bruto)) { origens.add(`https://${h}`); origens.add(`http://${h}`); }
+      }
+    }
+
+    await chrome.browsingData.remove(
+      { origins: [...origens] },
+      { cacheStorage: true, indexedDB: true, localStorage: true, serviceWorkers: true, fileSystems: true, webSQL: true }
+    );
+
+    setStatus(
+      `🧨 ${bruto} limpo: ${apagados} cookies apagados, mais Service Workers, CacheStorage, `
+      + 'localStorage, IndexedDB e cache do site.\n'
+      + 'Se o antivírus apontou esse site, feche as abas dele antes de reabrir — '
+      + 'um Service Worker ativo pode se registrar de novo.',
+      'ok'
+    );
+    $('alvo').value = '';
+    await analisar();
+  } catch (e) {
+    setStatus(`Falhou ao limpar ${bruto}: ${e && e.message ? e.message : e}`, 'erro');
+  } finally {
+    $('limpar-alvo').disabled = false;
+  }
+}
+
 // ---------------------------------------------------------------- diagnóstico
 
 // Testa cada degrau isoladamente, do mais básico ao mais específico, e diz
@@ -922,6 +990,8 @@ const visiveisAgora = () => {
 };
 
 $('reanalisar').addEventListener('click', analisar);
+$('limpar-alvo').addEventListener('click', limparAlvo);
+$('alvo').addEventListener('keydown', (e) => { if (e.key === 'Enter') limparAlvo(); });
 $('diagnostico').addEventListener('click', () => {
   diagnosticar().catch((e) => setStatus(`Diagnóstico falhou: ${e && e.message ? e.message : e}`, 'erro'));
 });
