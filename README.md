@@ -63,6 +63,22 @@ so importing someone else's file would plant *their* sessions in *your* browser.
 picker asks for confirmation, but the real rule is simple — only restore files you generated
 yourself.
 
+## Cleaning one specific site
+
+There is a separate field for wiping a single domain, even one that holds no cookie at all.
+It clears cookies, localStorage, IndexedDB, cache, **Service Workers and Service Worker
+CacheStorage** for that domain and its subdomains.
+
+It exists for a specific situation: your antivirus flags a site. That kind of leftover
+usually lives in a Service Worker rather than in a cookie, so the main table — which lists
+domains *by cookie* — would never show it.
+
+**This extension does not detect anything.** It cannot: there is no API for an extension to
+read another origin's cache or service worker contents, and checking a reputation list would
+require a network request, which this extension does not make. Detection is your antivirus's
+job; this is the cleanup you point at the result. Close that site's tabs first — an active
+Service Worker can register itself again.
+
 ## Safety
 
 Deleting a cookie logs you out of that site, so there are four brakes:
