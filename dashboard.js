@@ -8,7 +8,7 @@ const DIAS_JANELA = 30;
 const LIMITE_ATIVO = 30;
 const LIMITE_OCIOSO = 90;
 const LINHAS_POR_PAGINA = 300;
-const TETO_URLS_DOMINIO = 300;   // páginas devolvidas por domínio
+const TETO_HISTORICO = 60000;    // páginas lidas do histórico numa consulta só
 const URLS_AMOSTRADAS = 40;      // páginas por domínio que viram getVisits
 const ORCAMENTO_VISITAS = 6000;  // teto global de chamadas getVisits
 
@@ -145,6 +145,25 @@ async function coletarCookies() {
   return todos;
 }
 
+// Lê o histórico inteiro de uma vez e agrupa por domínio aqui dentro.
+// Consultar `search({text: dominio})` por domínio dependia do casamento de
+// TEXTO LIVRE do Chrome, que tokeniza a consulta e não casa domínio de forma
+// confiável — quando não casava, o domínio ficava sem primeira e sem última
+// visita. Agrupar local é exato e custa uma consulta em vez de N.
+async function lerHistorico() {
+  // Sem startTime o Chrome só olha as últimas 24h; com 0, olha tudo o que tem.
+  const itens = await chrome.history.search({ text: '', startTime: 0, maxResults: TETO_HISTORICO });
+  const porDominio = new Map();
+  for (const it of itens) {
+    let host;
+    try { host = new URL(it.url).hostname; } catch { continue; }
+    const d = dominioBase(host);
+    if (!porDominio.has(d)) porDominio.set(d, []);
+    porDominio.get(d).push(it);
+  }
+  return { porDominio, truncado: itens.length >= TETO_HISTORICO, paginas: itens.length };
+}
+
 // `search` só devolve a última visita de cada página; `getVisits` devolve todas.
 // É de lá que saem a primeira visita, a última exata e a contagem da janela.
 async function medirDominios(lista, aoProgredir) {
@@ -153,6 +172,10 @@ async function medirDominios(lista, aoProgredir) {
   const out = new Map();
   let orcamento = ORCAMENTO_VISITAS;
 
+  let hist = { porDominio: new Map(), truncado: false, paginas: 0 };
+  let falhouHistorico = false;
+  try { hist = await lerHistorico(); } catch { falhouHistorico = true; }
+
   for (let i = 0; i < lista.length; i++) {
     const dominio = lista[i];
     if (i % 10 === 0) {
@@ -160,45 +183,33 @@ async function medirDominios(lista, aoProgredir) {
       await respirar();
     }
 
-    let itens = [];
-    let falhou = false;
-    try {
-      // Sem startTime o Chrome só olha as últimas 24h; com 0, olha tudo.
-      itens = await chrome.history.search({ text: dominio, startTime: 0, maxResults: TETO_URLS_DOMINIO });
-    } catch { falhou = true; }
-
-    const paginas = [];
-    for (const it of itens) {
-      let host;
-      try { host = new URL(it.url).hostname; } catch { continue; }
-      if (dominioBase(host) !== dominio) continue;   // o texto casa com título também
-      paginas.push(it);
-    }
-    const truncado = itens.length >= TETO_URLS_DOMINIO;
+    const paginas = hist.porDominio.get(dominio) || [];
 
     if (!paginas.length) {
       // Ausência de registro não é prova de abandono: pode ser histórico limpo,
-      // aba anônima, conteúdo incorporado ou busca truncada.
+      // aba anônima, conteúdo incorporado, ou visita além da retenção do navegador.
       out.set(dominio, {
         primeira: null, ultima: null, visitas: 0, dias: new Set(),
-        confiavel: !(falhou || truncado)
+        confiavel: !(falhouHistorico || hist.truncado)
       });
       continue;
     }
 
     paginas.sort((a, b) => (b.lastVisitTime || 0) - (a.lastVisitTime || 0));
     const amostra = paginas.slice(0, URLS_AMOSTRADAS);
-    const completo = paginas.length <= URLS_AMOSTRADAS && !truncado;
+    const completo = paginas.length <= URLS_AMOSTRADAS && !hist.truncado;
 
     let primeira = Infinity, ultima = 0, visitas = 0;
     const dias = new Set();
+    let mediuVisitas = false;
 
     if (orcamento >= amostra.length) {
       orcamento -= amostra.length;
       for (const pagina of amostra) {
-        let lista = [];
-        try { lista = await chrome.history.getVisits({ url: pagina.url }); } catch { /* segue */ }
-        for (const v of lista) {
+        let visitasDaPagina = [];
+        try { visitasDaPagina = await chrome.history.getVisits({ url: pagina.url }); } catch { /* segue */ }
+        if (visitasDaPagina.length) mediuVisitas = true;
+        for (const v of visitasDaPagina) {
           const t = v.visitTime;
           if (!t) continue;
           if (t < primeira) primeira = t;
@@ -208,13 +219,26 @@ async function medirDominios(lista, aoProgredir) {
       }
     }
 
-    if (!ultima) ultima = paginas[0].lastVisitTime || 0;   // getVisits indisponível
+    // Sem getVisits (orçamento estourado ou API recusou), o lastVisitTime de
+    // cada página ainda dá um piso honesto — some o ⚠ nunca, os números são
+    // mínimos. Melhor um piso do que uma coluna vazia.
+    if (!mediuVisitas) {
+      for (const p of paginas) {
+        const t = p.lastVisitTime || 0;
+        if (!t) continue;
+        if (t < primeira) primeira = t;
+        if (t > ultima) ultima = t;
+        if (t >= corte) { visitas++; dias.add(Math.floor((agora - t) / DIA)); }
+      }
+    }
+
+    if (!ultima) ultima = paginas[0].lastVisitTime || 0;
     out.set(dominio, {
       primeira: primeira === Infinity ? null : primeira,
       ultima: ultima || null,
       visitas,
       dias,
-      confiavel: completo && !falhou
+      confiavel: completo && !falhouHistorico && mediuVisitas
     });
   }
   return out;
@@ -246,8 +270,10 @@ async function analisar() {
       porDominio.get(d).push(c);
     }
 
+    setStatus('Lendo o histórico do navegador… (uma consulta só, pode demorar alguns segundos)');
+    await respirar();
     const medidas = await medirDominios([...porDominio.keys()], (n, total) =>
-      setStatus(`Lendo histórico — domínio ${n} de ${total} (${cookies.length} cookies)`));
+      setStatus(`Cruzando com o histórico — domínio ${n} de ${total} (${cookies.length} cookies)`));
 
     setStatus('Montando o painel…');
     await respirar();

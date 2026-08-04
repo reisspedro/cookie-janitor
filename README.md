@@ -108,12 +108,23 @@ grep for them.
 a list of visits. Counting frequency by sweeping time windows with it produces wrong numbers,
 and without `startTime: 0` the search only sees the last 24 hours.
 
-Here each domain is resolved in two steps: `search` with `startTime: 0` lists the pages for
-that host, and `chrome.history.getVisits` returns **every visit of every page**, timestamped.
-That is where first visit, exact last visit and the window count come from.
+Its `text` parameter is a **free-text query**, not a domain filter: Chrome tokenises it and
+matches loosely against URL *and* title, so querying one domain at a time silently returned
+nothing for many of them — leaving both date columns empty. So the history is read **once**,
+with `text: ''` and `startTime: 0`, and grouped by domain locally. Exact, and one query
+instead of hundreds.
 
-When a domain has more pages than the query budget allows, the row gets a **⚠** and its
-numbers should be read as a floor, never a total.
+Then `chrome.history.getVisits` returns **every visit of every page**, timestamped. That is
+where first visit, exact last visit and the window count come from.
+
+If `getVisits` is unavailable or the query budget runs out, the panel falls back to each
+page's `lastVisitTime` — a real floor rather than an empty column — and marks the row **⚠**.
+Any row with **⚠** should be read as a minimum, never a total.
+
+**Ceiling worth knowing:** Chrome only retains browsing history for about 90 days by default.
+"First visit" therefore means *the earliest visit still in your history*, not the first time
+ever. If your oldest dates all cluster around three months back, that's the browser's
+retention limit, not the extension's.
 
 ## Domain grouping
 
