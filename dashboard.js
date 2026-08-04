@@ -1,22 +1,41 @@
 // Cookie Janitor — painel.
-// Cruza os cookies de todos os cookie stores com o histórico e mede duas coisas
-// diferentes: QUANDO você visitou pela última vez e o QUANTO você usa.
+// Para cada domínio que guarda cookie, mede a partir do histórico: quando você
+// visitou pela primeira vez, quando visitou pela última e quanto usou nos últimos
+// 30 dias. Tudo vem de chrome.history.getVisits, que devolve as visitas de verdade.
 
 const DIA = 24 * 60 * 60 * 1000;
-const DIAS_DETALHE = 30;   // período varrido dia a dia, para medir frequência
+const DIAS_JANELA = 30;
 const LIMITE_ATIVO = 30;
 const LIMITE_OCIOSO = 90;
 const LINHAS_POR_PAGINA = 300;
-const TETO_BUSCA = 10000;
-const TETO_DOMINIO = 300;
+const TETO_URLS_DOMINIO = 300;   // páginas devolvidas por domínio
+const URLS_AMOSTRADAS = 40;      // páginas por domínio que viram getVisits
+const ORCAMENTO_VISITAS = 6000;  // teto global de chamadas getVisits
 
-const TLDS_COMPOSTOS = new Set([
-  'com.br', 'net.br', 'org.br', 'gov.br', 'edu.br', 'art.br', 'blog.br',
-  'co.uk', 'org.uk', 'gov.uk', 'ac.uk', 'com.ar', 'com.mx', 'com.pt',
-  'com.au', 'co.jp', 'co.kr', 'com.co', 'com.es', 'co.in'
+// Sufixos onde o registrável tem 3 rótulos. Não é a Public Suffix List inteira:
+// o que não estiver aqui cai na regra genérica de ccTLD, e na dúvida agrupamos
+// MENOS (mantendo hosts separados) em vez de juntar sites independentes.
+const SUFIXOS_PUBLICOS = new Set([
+  'com.br', 'net.br', 'org.br', 'gov.br', 'edu.br', 'art.br', 'blog.br', 'jus.br',
+  'co.uk', 'org.uk', 'gov.uk', 'ac.uk', 'me.uk', 'ltd.uk',
+  'com.ar', 'com.mx', 'com.pt', 'com.au', 'com.co', 'com.es', 'com.tr', 'com.sg',
+  'com.hk', 'com.tw', 'com.cn', 'com.ua', 'com.pl', 'com.ru', 'com.vn', 'com.my',
+  'co.jp', 'co.kr', 'co.in', 'co.nz', 'co.za', 'co.il', 'co.th', 'co.id'
 ]);
 
-// Domínios que nunca vêm pré-marcados: perder esses cookies dá dor de cabeça.
+// Domínios de hospedagem: cada subdomínio é um site independente.
+const SUFIXOS_PRIVADOS = new Set([
+  'github.io', 'gitlab.io', 'netlify.app', 'vercel.app', 'pages.dev', 'workers.dev',
+  'herokuapp.com', 'appspot.com', 'web.app', 'firebaseapp.com', 'blogspot.com',
+  'wordpress.com', 'glitch.me', 'repl.co', 'replit.dev', 'surge.sh', 'onrender.com',
+  'fly.dev', 'railway.app', 'supabase.co', 'notion.site', 'substack.com',
+  'myshopify.com', 'zendesk.com', 'atlassian.net', 'sharepoint.com', 'sourceforge.net',
+  'azurewebsites.net', 'cloudfront.net', 'amazonaws.com', 'r2.dev', 'ngrok.io',
+  'trycloudflare.com', 'translate.goog', 'itch.io', 'neocities.org'
+]);
+
+const SEGUNDO_NIVEL = ['com', 'net', 'org', 'gov', 'edu', 'ac', 'co', 'or', 'ne', 'gob', 'mil', 'int'];
+
 const PROTEGIDOS_PADRAO = [
   'gov.br', 'bb.com.br', 'caixa.gov.br', 'itau.com.br', 'bradesco.com.br',
   'santander.com.br', 'nubank.com.br', 'inter.co', 'c6bank.com.br',
@@ -37,43 +56,65 @@ window.addEventListener('error', (e) => setStatus(`Erro: ${e.message}`, 'erro'))
 window.addEventListener('unhandledrejection', (e) =>
   setStatus(`Erro: ${e.reason && e.reason.message ? e.reason.message : e.reason}`, 'erro'));
 
+// Agrupar hosts independentes na mesma linha faria a seleção apagar cookies de
+// sites diferentes — por isso IP, localhost e host de um rótulo ficam inteiros.
 function dominioBase(host) {
-  host = String(host).replace(/^\./, '').toLowerCase();
+  host = String(host).replace(/^\./, '').replace(/\.$/, '').toLowerCase();
+  if (!host) return host;
+  if (host.includes(':') || host.startsWith('[')) return host;            // IPv6
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return host;                  // IPv4
   const p = host.split('.');
   if (p.length <= 2) return host;
-  if (TLDS_COMPOSTOS.has(p.slice(-2).join('.'))) return p.slice(-3).join('.');
-  return p.slice(-2).join('.');
+  const dois = p.slice(-2).join('.');
+  const tres = p.slice(-3).join('.');
+  if (SUFIXOS_PRIVADOS.has(dois)) return tres;
+  if (SUFIXOS_PUBLICOS.has(dois)) return tres;
+  if (p[p.length - 1].length === 2 && SEGUNDO_NIVEL.includes(p[p.length - 2])) return tres;
+  return dois;
 }
 
-function bucketDe(diasSemVisita) {
-  if (diasSemVisita === null) return 'morto';
-  if (diasSemVisita <= LIMITE_ATIVO) return 'ativo';
-  if (diasSemVisita <= LIMITE_OCIOSO) return 'ocioso';
+function bucketDe(dias) {
+  if (dias === null) return 'semdados';
+  if (dias <= LIMITE_ATIVO) return 'ativo';
+  if (dias <= LIMITE_OCIOSO) return 'ocioso';
   return 'antigo';
 }
 
-// Frequência = em quantos dias distintos da janela houve visita.
-function classificarUso(diasAtivos, janela) {
-  if (!diasAtivos) return 'nenhum';
-  const frac = diasAtivos / janela;
-  if (frac >= 0.5) return 'frequente';
-  if (frac >= 1 / 6) return 'regular';
+// Classifica pelo sinal MAIS forte: preferimos superestimar uso a sugerir
+// exclusão de algo que a pessoa usa.
+function classificarUso(visitas, diasAtivos, janela) {
+  if (!visitas && !diasAtivos) return 'nenhum';
+  if (diasAtivos >= janela * 0.5 || visitas >= janela * 2) return 'frequente';
+  if (diasAtivos >= janela / 6 || visitas >= janela / 2) return 'regular';
   return 'raro';
 }
 
 const ROTULO_USO = { frequente: 'frequente', regular: 'regular', raro: 'usei pouco', nenhum: 'nada na janela' };
+const ROTULO_BUCKET = { ativo: 'ativo', ocioso: 'ocioso', antigo: 'antigo', semdados: 'sem registro' };
 
-function rotuloVisita(ultimaVisita, dias) {
-  if (ultimaVisita === null) return 'nunca visitado';
+function rotuloVisita(ms) {
+  if (!ms) return '—';
+  const dias = Math.max(0, Math.floor((Date.now() - ms) / DIA));
   if (dias === 0) return 'hoje';
   if (dias === 1) return 'ontem';
   if (dias < 30) return `há ${dias} dias`;
   if (dias < 365) return `há ${Math.round(dias / 30)} meses`;
-  return 'há mais de 1 ano';
+  const anos = (dias / 365).toFixed(1).replace('.', ',');
+  return `há ${anos} anos`;
 }
+
+const dataHora = (ms) => new Date(ms).toLocaleString('pt-BR', {
+  day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit'
+});
 
 function urlDoCookie(c) {
   return (c.secure ? 'https://' : 'http://') + c.domain.replace(/^\./, '') + (c.path || '/');
+}
+
+// Um cookie só é o mesmo cookie se store, partição, domínio, caminho e nome batem.
+function chaveDoCookie(c) {
+  const part = c.partitionKey ? JSON.stringify(c.partitionKey) : '';
+  return `${c.storeId || ''}|${part}|${c.domain}|${c.path}|${c.name}`;
 }
 
 function setStatus(msg, classe = '') {
@@ -104,66 +145,77 @@ async function coletarCookies() {
   return todos;
 }
 
-// Frequência: os últimos 30 dias, um dia por vez. Aparecer numa janela é prova de
-// visita naquele dia — serve tanto para contar dias ativos quanto como piso de recência.
-async function coletarFrequencia(aoProgredir) {
+// `search` só devolve a última visita de cada página; `getVisits` devolve todas.
+// É de lá que saem a primeira visita, a última exata e a contagem da janela.
+async function medirDominios(lista, aoProgredir) {
   const agora = Date.now();
-  const reg = new Map();
-
-  for (let i = 0; i < DIAS_DETALHE; i++) {
-    if (aoProgredir) aoProgredir(`frequência — dia ${i + 1} de ${DIAS_DETALHE}`);
-    await respirar();
-    const fim = agora - i * DIA;
-
-    let itens = [];
-    try {
-      itens = await chrome.history.search({
-        text: '', startTime: fim - DIA, endTime: fim, maxResults: TETO_BUSCA
-      });
-    } catch { continue; }
-
-    for (const item of itens) {
-      let host;
-      try { host = new URL(item.url).hostname; } catch { continue; }
-      if (!host) continue;
-      const d = dominioBase(host);
-      let r = reg.get(d);
-      if (!r) { r = { dias: new Set(), piso: 0 }; reg.set(d, r); }
-      r.dias.add(i);
-      if (fim - DIA > r.piso) r.piso = fim - DIA;
-    }
-  }
-  return reg;
-}
-
-// Última visita EXATA. Consultando por domínio sem recorte de tempo, o lastVisitTime
-// devolvido é a última visita real da página — sem janela, sem aproximação.
-// (Sem `startTime` o Chrome assume só as últimas 24h; daí o startTime: 0.)
-async function precisarUltimaVisita(lista, aoProgredir) {
+  const corte = agora - DIAS_JANELA * DIA;
   const out = new Map();
-  let n = 0;
+  let orcamento = ORCAMENTO_VISITAS;
 
-  for (const dominio of lista) {
-    n++;
-    if (n % 20 === 0) {
-      if (aoProgredir) aoProgredir(`última visita — ${n} de ${lista.length} domínios`);
+  for (let i = 0; i < lista.length; i++) {
+    const dominio = lista[i];
+    if (i % 10 === 0) {
+      if (aoProgredir) aoProgredir(i + 1, lista.length);
       await respirar();
     }
 
     let itens = [];
+    let falhou = false;
     try {
-      itens = await chrome.history.search({ text: dominio, startTime: 0, maxResults: TETO_DOMINIO });
-    } catch { /* segue com o piso da frequência */ }
+      // Sem startTime o Chrome só olha as últimas 24h; com 0, olha tudo.
+      itens = await chrome.history.search({ text: dominio, startTime: 0, maxResults: TETO_URLS_DOMINIO });
+    } catch { falhou = true; }
 
-    let ultima = 0, visitas = 0;
-    for (const item of itens) {
+    const paginas = [];
+    for (const it of itens) {
       let host;
-      try { host = new URL(item.url).hostname; } catch { continue; }
+      try { host = new URL(it.url).hostname; } catch { continue; }
       if (dominioBase(host) !== dominio) continue;   // o texto casa com título também
-      if (item.lastVisitTime > ultima) ultima = item.lastVisitTime;
-      visitas += item.visitCount || 0;
+      paginas.push(it);
     }
-    out.set(dominio, { ultima, visitas });
+    const truncado = itens.length >= TETO_URLS_DOMINIO;
+
+    if (!paginas.length) {
+      // Ausência de registro não é prova de abandono: pode ser histórico limpo,
+      // aba anônima, conteúdo incorporado ou busca truncada.
+      out.set(dominio, {
+        primeira: null, ultima: null, visitas: 0, dias: new Set(),
+        confiavel: !(falhou || truncado)
+      });
+      continue;
+    }
+
+    paginas.sort((a, b) => (b.lastVisitTime || 0) - (a.lastVisitTime || 0));
+    const amostra = paginas.slice(0, URLS_AMOSTRADAS);
+    const completo = paginas.length <= URLS_AMOSTRADAS && !truncado;
+
+    let primeira = Infinity, ultima = 0, visitas = 0;
+    const dias = new Set();
+
+    if (orcamento >= amostra.length) {
+      orcamento -= amostra.length;
+      for (const pagina of amostra) {
+        let lista = [];
+        try { lista = await chrome.history.getVisits({ url: pagina.url }); } catch { /* segue */ }
+        for (const v of lista) {
+          const t = v.visitTime;
+          if (!t) continue;
+          if (t < primeira) primeira = t;
+          if (t > ultima) ultima = t;
+          if (t >= corte) { visitas++; dias.add(Math.floor((agora - t) / DIA)); }
+        }
+      }
+    }
+
+    if (!ultima) ultima = paginas[0].lastVisitTime || 0;   // getVisits indisponível
+    out.set(dominio, {
+      primeira: primeira === Infinity ? null : primeira,
+      ultima: ultima || null,
+      visitas,
+      dias,
+      confiavel: completo && !falhou
+    });
   }
   return out;
 }
@@ -177,7 +229,6 @@ async function analisar() {
     if (!chrome.cookies || !chrome.history) {
       throw new Error('Faltam as permissões de cookies/histórico. Recarregue a extensão em brave://extensions.');
     }
-
     const precisaRecarregar = !chrome.storage || !chrome.browsingData;
 
     let guardado = {};
@@ -195,55 +246,44 @@ async function analisar() {
       porDominio.get(d).push(c);
     }
 
-    const aviso = (onde) => setStatus(`Lendo histórico: ${onde} — ${cookies.length} cookies lidos`);
-    const freq = await coletarFrequencia(aviso);
-    const exato = await precisarUltimaVisita([...porDominio.keys()], aviso);
+    const medidas = await medirDominios([...porDominio.keys()], (n, total) =>
+      setStatus(`Lendo histórico — domínio ${n} de ${total} (${cookies.length} cookies)`));
 
-    setStatus('Cruzando os dados…');
+    setStatus('Montando o painel…');
     await respirar();
 
-    const agora = Date.now();
     dominios = [...porDominio].map(([dominio, cs]) => {
-      const f = freq.get(dominio);
-      const e = exato.get(dominio);
-      const piso = f ? f.piso : 0;                       // rede de segurança
-      const ms = Math.max(e ? e.ultima : 0, piso);
-      const ultima = ms > 0 ? ms : null;
-      const dias = ultima === null ? null : Math.max(0, Math.floor((agora - ultima) / DIA));
-      const diasSet = f ? f.dias : new Set();
+      const m = medidas.get(dominio);
+      const dias = m.ultima ? Math.max(0, Math.floor((Date.now() - m.ultima) / DIA)) : null;
       return {
         dominio,
         cookies: cs,
         total: cs.length,
-        ultima,
-        aproximado: !!(ultima && (!e || !e.ultima)),     // veio só do piso diário
-        dias,
-        dias30: diasSet.size,
-        dias7: [...diasSet].filter((i) => i < 7).length,
-        visitas: e ? e.visitas : 0,
+        primeira: m.primeira,
+        ultima: m.ultima,
+        visitas: m.visitas,
+        dias30: m.dias.size,
+        dias7: [...m.dias].filter((d) => d < 7).length,
+        confiavel: m.confiavel,
+        diasSemVisita: dias,
         bucket: bucketDe(dias)
       };
     });
 
-    selecionados = new Set(
-      dominios.filter((d) => d.bucket === 'morto' && !protegidos.has(d.dominio)).map((d) => d.dominio)
-    );
-
+    // Nada vem pré-marcado: seleção é sempre ato explícito.
+    selecionados.clear();
     limiteLinhas = LINHAS_POR_PAGINA;
     render();
 
-    if (!cookies.length) {
-      setStatus('Nenhum cookie encontrado. Se isso parece errado, recarregue a extensão em brave://extensions.', 'erro');
-    } else {
-      setStatus(
-        `${cookies.length} cookies em ${dominios.length} domínios. ` +
-        `Os ${selecionados.size} sem nenhuma visita registrada já vêm marcados — revise antes de deletar.` +
-        (precisaRecarregar
-          ? ' ⚠️ Recarregue a extensão em brave://extensions para ativar a lista de protegidos salva e a limpeza de dados de site.'
-          : ''),
-        precisaRecarregar ? 'erro' : 'ok'
-      );
-    }
+    const semRegistro = dominios.filter((d) => d.bucket === 'semdados').length;
+    setStatus(
+      cookies.length
+        ? `${cookies.length} cookies em ${dominios.length} domínios. ` +
+          `${semRegistro} sem registro no histórico — nada vem marcado, a escolha é sua.` +
+          (precisaRecarregar ? ' ⚠️ Recarregue a extensão em brave://extensions para ativar protegidos salvos e limpeza de dados de site.' : '')
+        : 'Nenhum cookie encontrado. Se isso parece errado, recarregue a extensão em brave://extensions.',
+      cookies.length && !precisaRecarregar ? 'ok' : 'erro'
+    );
   } catch (e) {
     console.error(e);
     setStatus(`Falhou: ${e && e.message ? e.message : e}`, 'erro');
@@ -256,7 +296,8 @@ async function analisar() {
 // ---------------------------------------------------------------- render
 
 const diasNaJanela = (d) => (janelaAtual() === 7 ? d.dias7 : d.dias30);
-const usoDe = (d) => classificarUso(diasNaJanela(d), janelaAtual());
+const visitasNaJanela = (d) => (janelaAtual() === 7 ? Math.round(d.visitas * d.dias7 / (d.dias30 || 1)) : d.visitas);
+const usoDe = (d) => classificarUso(visitasNaJanela(d), diasNaJanela(d), janelaAtual());
 
 function render() {
   const busca = $('busca').value.trim().toLowerCase();
@@ -264,36 +305,32 @@ function render() {
   const filtroUso = $('uso').value;
   const janela = janelaAtual();
 
-  const contagem = { ativo: 0, ocioso: 0, antigo: 0, morto: 0 };
-  let cookiesRemoviveis = 0;
+  const contagem = { ativo: 0, ocioso: 0, antigo: 0, semdados: 0 };
   let pouco = 0;
   for (const d of dominios) {
     contagem[d.bucket]++;
-    if (!protegidos.has(d.dominio) && (d.bucket === 'morto' || d.bucket === 'antigo')) {
-      cookiesRemoviveis += d.total;
-    }
     if (usoDe(d) === 'raro') pouco++;
   }
 
   $('c-cookies').textContent = dominios.reduce((s, d) => s + d.total, 0);
   $('c-dominios').textContent = dominios.length;
-  $('c-mortos').textContent = contagem.morto + contagem.antigo;
+  $('c-antigos').textContent = contagem.antigo;
   $('c-pouco').textContent = pouco;
-  $('c-recuperaveis').textContent = cookiesRemoviveis;
+  $('c-semdados').textContent = contagem.semdados;
   $('c-protegidos').textContent = dominios.filter((d) => protegidos.has(d.dominio)).length;
 
   const barra = $('barra');
   barra.replaceChildren();
   const totalDom = dominios.length || 1;
-  for (const [b, cor] of [['ativo', 'var(--ok)'], ['ocioso', 'var(--morno)'], ['antigo', 'var(--frio)'], ['morto', 'var(--morto)']]) {
+  for (const [b, cor] of [['ativo', 'var(--ok)'], ['ocioso', 'var(--morno)'], ['antigo', 'var(--frio)'], ['semdados', 'var(--morto)']]) {
     if (!contagem[b]) continue;
     const seg = document.createElement('div');
     seg.style.flexGrow = contagem[b];
     seg.style.background = cor;
-    seg.style.color = b === 'morto' ? '#fff' : '#14161b';
+    seg.style.color = b === 'semdados' ? '#fff' : '#14161b';
     const pct = Math.round(contagem[b] / totalDom * 100);
     seg.textContent = pct >= 7 ? String(contagem[b]) : '';
-    seg.title = `${b}: ${contagem[b]} domínios (${pct}%)`;
+    seg.title = `${ROTULO_BUCKET[b]}: ${contagem[b]} domínios (${pct}%)`;
     barra.appendChild(seg);
   }
 
@@ -306,14 +343,15 @@ function render() {
     return d.bucket === filtroBucket;
   });
 
-  const peso = { morto: 0, antigo: 1, ocioso: 2, ativo: 3 };
+  const peso = { semdados: 0, antigo: 1, ocioso: 2, ativo: 3 };
   visiveis.sort((a, b) => {
     if (ordem === 'cookies') return b.total - a.total;
     if (ordem === 'nome') return a.dominio.localeCompare(b.dominio);
+    if (ordem === 'antiguidade') return (a.primeira ?? Infinity) - (b.primeira ?? Infinity);
     if (ordem === 'menos-usado') {
-      return diasNaJanela(a) - diasNaJanela(b) || a.visitas - b.visitas || b.total - a.total;
+      return visitasNaJanela(a) - visitasNaJanela(b) || diasNaJanela(a) - diasNaJanela(b);
     }
-    return peso[a.bucket] - peso[b.bucket] || (b.dias ?? 1e9) - (a.dias ?? 1e9);
+    return peso[a.bucket] - peso[b.bucket] || (b.diasSemVisita ?? 1e9) - (a.diasSemVisita ?? 1e9);
   });
 
   const pagina = visiveis.slice(0, limiteLinhas);
@@ -322,6 +360,7 @@ function render() {
   for (const d of pagina) {
     const prot = protegidos.has(d.dominio);
     const ativos = diasNaJanela(d);
+    const vis = visitasNaJanela(d);
     const uso = usoDe(d);
 
     const tr = document.createElement('tr');
@@ -347,6 +386,13 @@ function render() {
     const tdDom = document.createElement('td');
     tdDom.className = 'dom';
     tdDom.textContent = d.dominio;
+    if (!d.confiavel) {
+      const alerta = document.createElement('span');
+      alerta.className = 'incerto';
+      alerta.textContent = ' ⚠';
+      alerta.title = 'Medição incompleta: o histórico deste domínio tem mais páginas do que foi possível ler, ou a consulta falhou. Trate os números como piso.';
+      tdDom.appendChild(alerta);
+    }
     tdDom.title = 'Clique para ver os cookies';
     tdDom.dataset.expandir = d.dominio;
 
@@ -354,21 +400,30 @@ function render() {
     tdN.className = 'num';
     tdN.textContent = String(d.total);
 
-    const tdVisita = document.createElement('td');
-    const rel = document.createElement('div');
-    rel.textContent = rotuloVisita(d.ultima, d.dias);
-    tdVisita.appendChild(rel);
+    const tdPrimeira = document.createElement('td');
+    if (d.primeira) {
+      const r = document.createElement('div');
+      r.textContent = rotuloVisita(d.primeira);
+      const e = document.createElement('div');
+      e.className = 'exato';
+      e.textContent = dataHora(d.primeira);
+      tdPrimeira.append(r, e);
+      tdPrimeira.title = 'Primeira visita registrada no histórico.';
+    } else {
+      tdPrimeira.textContent = '—';
+    }
+
+    const tdUltima = document.createElement('td');
     if (d.ultima) {
-      const exatoEl = document.createElement('div');
-      exatoEl.className = 'exato';
-      const quando = new Date(d.ultima).toLocaleString('pt-BR', {
-        day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit'
-      });
-      exatoEl.textContent = d.aproximado ? `~ ${quando}` : quando;
-      exatoEl.title = d.aproximado
-        ? 'Data aproximada: houve visita neste dia, mas o horário exato não foi encontrado.'
-        : 'Data e hora exatas da última visita.';
-      tdVisita.appendChild(exatoEl);
+      const r = document.createElement('div');
+      r.textContent = rotuloVisita(d.ultima);
+      const e = document.createElement('div');
+      e.className = 'exato';
+      e.textContent = dataHora(d.ultima);
+      tdUltima.append(r, e);
+      tdUltima.title = 'Última visita registrada no histórico.';
+    } else {
+      tdUltima.textContent = 'sem registro';
     }
 
     const tdUso = document.createElement('td');
@@ -376,28 +431,23 @@ function render() {
     cx.className = 'uso-cel';
     const txt = document.createElement('span');
     txt.className = `uso-txt ${uso}`;
-    txt.textContent = `${ativos}/${janela} dias · ${ROTULO_USO[uso]}`;
+    txt.textContent = `${vis} visita${vis === 1 ? '' : 's'} · ${ativos} dia${ativos === 1 ? '' : 's'} · ${ROTULO_USO[uso]}`;
     const barraUso = document.createElement('div');
     barraUso.className = 'uso-bar';
     const fill = document.createElement('i');
-    fill.style.width = `${Math.round(ativos / janela * 100)}%`;
+    fill.style.width = `${Math.min(100, Math.round(ativos / janela * 100))}%`;
     barraUso.appendChild(fill);
     cx.append(txt, barraUso);
-    tdUso.title = `Visitou em ${ativos} dia(s) distinto(s) dos últimos ${janela}.`;
+    tdUso.title = `${vis} visitas em ${ativos} dia(s) distinto(s) dos últimos ${janela}.`;
     tdUso.appendChild(cx);
-
-    const tdVisitas = document.createElement('td');
-    tdVisitas.className = 'num';
-    tdVisitas.textContent = d.visitas ? String(d.visitas) : '—';
-    tdVisitas.title = 'Total de visitas registradas no histórico (todo o período).';
 
     const tdTag = document.createElement('td');
     const tag = document.createElement('span');
     tag.className = `tag ${d.bucket}`;
-    tag.textContent = { ativo: 'ativo', ocioso: 'ocioso', antigo: 'antigo', morto: 'nunca' }[d.bucket];
+    tag.textContent = ROTULO_BUCKET[d.bucket];
     tdTag.appendChild(tag);
 
-    tr.append(tdSel, tdLock, tdDom, tdN, tdVisita, tdUso, tdVisitas, tdTag);
+    tr.append(tdSel, tdLock, tdDom, tdN, tdPrimeira, tdUltima, tdUso, tdTag);
     frag.appendChild(tr);
   }
 
@@ -416,6 +466,7 @@ function render() {
 
   $('corpo').replaceChildren(frag);
   $('vazio').hidden = visiveis.length > 0;
+  $('visiveis').textContent = visiveis.length;
   atualizarSelecao();
 }
 
@@ -431,14 +482,21 @@ function atualizarSelecao() {
 
 // ---------------------------------------------------------------- ações
 
-function baixarBackup(cookies) {
-  const blob = new Blob([JSON.stringify({ criado: new Date().toISOString(), cookies }, null, 2)],
-    { type: 'application/json' });
+async function guardarBackup(cookies) {
+  const dados = { criado: new Date().toISOString(), cookies };
+  const texto = JSON.stringify(dados, null, 2);
+
+  const blob = new Blob([texto], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `cookies-backup-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+
+  // O download pode ser bloqueado pelo navegador; a cópia local é a rede de segurança.
+  if (texto.length < 4_000_000) {
+    try { await chrome.storage.local.set({ ultimoBackup: dados }); } catch { /* sem storage */ }
+  }
 }
 
 async function deletar() {
@@ -450,18 +508,25 @@ async function deletar() {
 
   $('deletar').disabled = true;
   try {
-    if ($('opt-backup').checked) baixarBackup(cookies);
+    if ($('opt-backup').checked) await guardarBackup(cookies);
 
-    let ok = 0, falhas = 0;
+    let ok = 0, naoAchados = 0, falhas = 0;
     for (const c of cookies) {
+      const alvo = { url: urlDoCookie(c), name: c.name, storeId: c.storeId };
+      if (c.partitionKey) alvo.partitionKey = c.partitionKey;
       try {
-        await chrome.cookies.remove({ url: urlDoCookie(c), name: c.name, storeId: c.storeId });
-        ok++;
+        // remove() resolve mesmo quando não apaga nada: só conta o que voltou.
+        const r = await chrome.cookies.remove(alvo);
+        if (r) ok++; else naoAchados++;
       } catch { falhas++; }
     }
 
     if ($('opt-sitedata').checked) {
-      const origens = alvos.flatMap((d) => [`https://${d.dominio}`, `http://${d.dominio}`]);
+      // Origens vêm dos domínios reais dos cookies, não do domínio-base.
+      const origens = [...new Set(cookies.flatMap((c) => {
+        const h = c.domain.replace(/^\./, '');
+        return [`https://${h}`, `http://${h}`];
+      }))];
       try {
         await chrome.browsingData.remove(
           { origins: origens },
@@ -477,7 +542,11 @@ async function deletar() {
     } catch { /* histórico do popup é opcional */ }
 
     selecionados.clear();
-    setStatus(`🧹 ${ok} cookies deletados de ${alvos.length} domínios${falhas ? ` (${falhas} falharam)` : ''}.`, 'ok');
+    const extras = [
+      naoAchados ? `${naoAchados} já não existiam` : '',
+      falhas ? `${falhas} falharam` : ''
+    ].filter(Boolean).join(', ');
+    setStatus(`🧹 ${ok} cookies deletados de ${alvos.length} domínios${extras ? ` (${extras})` : ''}.`, 'ok');
     await analisar();
   } catch (e) {
     console.error(e);
@@ -486,18 +555,14 @@ async function deletar() {
   }
 }
 
-async function restaurar(arquivo) {
-  let dados;
-  try {
-    dados = JSON.parse(await arquivo.text());
-  } catch {
-    return setStatus('Arquivo de backup inválido.', 'erro');
-  }
-  const lista = Array.isArray(dados) ? dados : dados.cookies;
-  if (!Array.isArray(lista)) return setStatus('Backup sem lista de cookies.', 'erro');
-
+async function restaurarLista(lista) {
   let ok = 0, falhas = 0;
+  const vistos = new Set();
   for (const c of lista) {
+    const chave = chaveDoCookie(c);
+    if (vistos.has(chave)) continue;
+    vistos.add(chave);
+
     const det = {
       url: urlDoCookie(c),
       name: c.name,
@@ -510,10 +575,35 @@ async function restaurar(arquivo) {
     if (!c.hostOnly) det.domain = c.domain;
     if (c.sameSite && c.sameSite !== 'unspecified') det.sameSite = c.sameSite;
     if (!c.session && c.expirationDate) det.expirationDate = c.expirationDate;
+    if (c.partitionKey) det.partitionKey = c.partitionKey;
     try { await chrome.cookies.set(det); ok++; } catch { falhas++; }
   }
-  setStatus(`♻️ ${ok} cookies restaurados${falhas ? ` (${falhas} falharam — provavelmente expirados)` : ''}.`, 'ok');
+  setStatus(
+    `♻️ ${ok} cookies restaurados` +
+    (falhas ? ` · ${falhas} não voltaram (expirados, ou a janela anônima de origem já fechou).` : '.'),
+    'ok'
+  );
   await analisar();
+}
+
+async function restaurarArquivo(arquivo) {
+  let dados;
+  try { dados = JSON.parse(await arquivo.text()); }
+  catch { return setStatus('Arquivo de backup inválido.', 'erro'); }
+  const lista = Array.isArray(dados) ? dados : dados.cookies;
+  if (!Array.isArray(lista)) return setStatus('Backup sem lista de cookies.', 'erro');
+  await restaurarLista(lista);
+}
+
+async function restaurarUltimo() {
+  let guardado = {};
+  try { guardado = (await chrome.storage.local.get('ultimoBackup')) || {}; } catch { /* sem storage */ }
+  const b = guardado.ultimoBackup;
+  if (!b || !Array.isArray(b.cookies)) {
+    return setStatus('Não há backup guardado nesta extensão. Use "Restaurar de arquivo…".', 'erro');
+  }
+  if (!confirm(`Restaurar ${b.cookies.length} cookies do backup de ${new Date(b.criado).toLocaleString('pt-BR')}?`)) return;
+  await restaurarLista(b.cookies);
 }
 
 async function alternarProtecao(dominio) {
@@ -537,7 +627,7 @@ function expandir(dominio, linha) {
   const td = document.createElement('td');
   td.colSpan = 8;
   const nomes = d.cookies
-    .map((c) => `${c.name}${c.session ? ' (sessão)' : ''} → ${c.domain}`)
+    .map((c) => `${c.name}${c.session ? ' (sessão)' : ''}${c.partitionKey ? ' (particionado)' : ''} → ${c.domain}${c.path}`)
     .sort();
   for (const n of nomes) {
     const code = document.createElement('code');
@@ -551,6 +641,19 @@ function expandir(dominio, linha) {
 // ---------------------------------------------------------------- eventos
 
 const reRender = () => { limiteLinhas = LINHAS_POR_PAGINA; render(); };
+const visiveisAgora = () => {
+  const busca = $('busca').value.trim().toLowerCase();
+  const filtroUso = $('uso').value;
+  return dominios.filter((d) => {
+    if (protegidos.has(d.dominio)) return false;
+    if (busca && !d.dominio.includes(busca)) return false;
+    if (filtroUso !== 'todos' && usoDe(d) !== filtroUso) return false;
+    if (filtroBucket === 'todos') return true;
+    if (filtroBucket === 'protegido') return false;
+    if (filtroBucket === 'pouco') return usoDe(d) === 'raro';
+    return d.bucket === filtroBucket;
+  });
+};
 
 $('reanalisar').addEventListener('click', analisar);
 $('busca').addEventListener('input', reRender);
@@ -566,11 +669,14 @@ $('chips').addEventListener('click', (e) => {
   reRender();
 });
 
-$('sel-mortos').addEventListener('click', () => {
+$('sel-visiveis').addEventListener('click', () => {
+  for (const d of visiveisAgora()) selecionados.add(d.dominio);
+  render();
+});
+
+$('sel-antigos').addEventListener('click', () => {
   for (const d of dominios) {
-    if (!protegidos.has(d.dominio) && (d.bucket === 'morto' || d.bucket === 'antigo')) {
-      selecionados.add(d.dominio);
-    }
+    if (!protegidos.has(d.dominio) && d.bucket === 'antigo') selecionados.add(d.dominio);
   }
   render();
 });
@@ -603,9 +709,10 @@ $('corpo').addEventListener('change', (e) => {
 });
 
 $('deletar').addEventListener('click', deletar);
+$('restaurar-ultimo').addEventListener('click', restaurarUltimo);
 $('restaurar').addEventListener('click', () => $('arquivo').click());
 $('arquivo').addEventListener('change', (e) => {
-  if (e.target.files[0]) restaurar(e.target.files[0]);
+  if (e.target.files[0]) restaurarArquivo(e.target.files[0]);
   e.target.value = '';
 });
 

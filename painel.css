@@ -31,6 +31,8 @@ header.topo {
   margin-bottom: 20px;
 }
 header.topo h1 { font-size: 20px; margin: 0; }
+.marca { display: flex; align-items: center; gap: 12px; }
+.incerto { color: var(--morno); cursor: help; }
 header.topo .sub { color: var(--txt-fraco); font-size: 13px; }
 
 /* ---- cards de estatística ---- */

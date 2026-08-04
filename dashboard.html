@@ -3,15 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <title>Cookie Janitor — painel</title>
+<link rel="icon" type="image/png" href="icones/icone-32.png">
 <link rel="stylesheet" href="painel.css">
 </head>
 <body>
 <div class="wrap">
 
   <header class="topo">
-    <div>
-      <h1>🧹 Cookie Janitor</h1>
-      <div class="sub">Cruza os cookies do navegador com seu histórico: quando você visitou e o quanto usa.</div>
+    <div class="marca">
+      <img src="icones/icone-48.png" alt="" width="34" height="34">
+      <div>
+        <h1>Cookie Janitor</h1>
+        <div class="sub">Primeira visita, última visita e quanto você usou cada site nos últimos 30 dias.</div>
+      </div>
     </div>
     <button id="reanalisar" class="primario">Reanalisar</button>
   </header>
@@ -21,9 +25,9 @@
   <section class="cards">
     <div class="card"><div class="n" id="c-cookies">—</div><div class="rot">cookies</div></div>
     <div class="card"><div class="n" id="c-dominios">—</div><div class="rot">domínios</div></div>
-    <div class="card destaque"><div class="n" id="c-mortos">—</div><div class="rot">sem visita há 90+ dias</div></div>
-    <div class="card"><div class="n" id="c-pouco">—</div><div class="rot">pouco usados (30d)</div></div>
-    <div class="card"><div class="n" id="c-recuperaveis">—</div><div class="rot">cookies removíveis</div></div>
+    <div class="card destaque"><div class="n" id="c-antigos">—</div><div class="rot">sem visita há 91+ dias</div></div>
+    <div class="card"><div class="n" id="c-pouco">—</div><div class="rot">usei pouco</div></div>
+    <div class="card"><div class="n" id="c-semdados">—</div><div class="rot">sem registro</div></div>
     <div class="card"><div class="n" id="c-protegidos">—</div><div class="rot">protegidos</div></div>
   </section>
 
@@ -32,12 +36,12 @@
     <span style="--cor: var(--ok)">Ativo (até 30 dias)</span>
     <span style="--cor: var(--morno)">Ocioso (31–90 dias)</span>
     <span style="--cor: var(--frio)">Antigo (91+ dias)</span>
-    <span style="--cor: var(--morto)">Nunca visitado</span>
+    <span style="--cor: var(--morto)">Sem registro no histórico</span>
   </div>
 
   <div class="controles">
     <input type="search" id="busca" placeholder="Filtrar domínio…">
-    <select id="janela" title="Janela usada nas colunas de uso">
+    <select id="janela" title="Janela usada na coluna de uso">
       <option value="30">Uso nos últimos 30 dias</option>
       <option value="7">Uso nos últimos 7 dias</option>
     </select>
@@ -45,20 +49,22 @@
       <option value="todos">Frequência: qualquer</option>
       <option value="frequente">Só frequentes</option>
       <option value="regular">Só regulares</option>
-      <option value="raro">Só raros (pouco usados)</option>
+      <option value="raro">Só "usei pouco"</option>
       <option value="nenhum">Só sem uso na janela</option>
     </select>
     <select id="ordem">
       <option value="tempo">Ordenar: mais abandonado</option>
       <option value="menos-usado">Ordenar: menos usado</option>
+      <option value="antiguidade">Ordenar: conheço há mais tempo</option>
       <option value="cookies">Ordenar: mais cookies</option>
       <option value="nome">Ordenar: alfabética</option>
     </select>
   </div>
 
   <div class="controles">
-    <button id="sel-mortos">Marcar abandonados</button>
-    <button id="sel-pouco">Marcar pouco usados</button>
+    <button id="sel-visiveis">Marcar os <b id="visiveis">0</b> visíveis</button>
+    <button id="sel-antigos">Marcar 91+ dias</button>
+    <button id="sel-pouco">Marcar "usei pouco"</button>
     <button id="sel-nenhum">Desmarcar tudo</button>
   </div>
 
@@ -67,7 +73,7 @@
     <button class="chip" data-bucket="ativo">Ativos</button>
     <button class="chip" data-bucket="ocioso">Ociosos</button>
     <button class="chip" data-bucket="antigo">Antigos</button>
-    <button class="chip" data-bucket="morto">Nunca visitados</button>
+    <button class="chip" data-bucket="semdados">Sem registro</button>
     <button class="chip" data-bucket="pouco">🎯 Usei pouco</button>
     <button class="chip" data-bucket="protegido">🔒 Protegidos</button>
   </div>
@@ -78,11 +84,11 @@
         <th style="width:34px"></th>
         <th style="width:30px"></th>
         <th>Domínio</th>
-        <th class="num" style="width:80px">Cookies</th>
-        <th style="width:140px">Última visita</th>
-        <th style="width:170px">Uso na janela</th>
-        <th class="num" style="width:90px">Visitas</th>
-        <th style="width:115px">Situação</th>
+        <th class="num" style="width:75px">Cookies</th>
+        <th style="width:130px">Primeira visita</th>
+        <th style="width:130px">Última visita</th>
+        <th style="width:210px">Uso na janela</th>
+        <th style="width:110px">Situação</th>
       </tr>
     </thead>
     <tbody id="corpo"></tbody>
@@ -95,7 +101,8 @@
   <span class="selinfo" id="selinfo">Nenhum domínio selecionado</span>
   <label><input type="checkbox" id="opt-backup" checked> Backup antes de deletar</label>
   <label><input type="checkbox" id="opt-sitedata"> Apagar também dados do site (localStorage, cache, IndexedDB)</label>
-  <button id="restaurar">Restaurar backup…</button>
+  <button id="restaurar-ultimo">Desfazer última limpeza</button>
+  <button id="restaurar">Restaurar de arquivo…</button>
   <input type="file" id="arquivo" accept="application/json" hidden>
   <button id="deletar" class="perigo" disabled>Deletar selecionados</button>
 </div>
