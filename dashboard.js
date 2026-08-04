@@ -494,9 +494,13 @@ async function guardarBackup(cookies) {
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 
   // O download pode ser bloqueado pelo navegador; a cópia local é a rede de segurança.
+  // Acima do teto do storage ela não cabe — e isso precisa ser dito, senão a
+  // pessoa acha que tem desfazer quando não tem.
   if (texto.length < 4_000_000) {
-    try { await chrome.storage.local.set({ ultimoBackup: dados }); } catch { /* sem storage */ }
+    try { await chrome.storage.local.set({ ultimoBackup: dados }); } catch { return false; }
+    return true;
   }
+  return false;
 }
 
 async function deletar() {
@@ -512,7 +516,8 @@ async function deletar() {
 
   $('deletar').disabled = true;
   try {
-    if ($('opt-backup').checked) await guardarBackup(cookies);
+    let copiaInterna = true;
+    if ($('opt-backup').checked) copiaInterna = await guardarBackup(cookies);
 
     let ok = 0, naoAchados = 0, falhas = 0;
     for (const c of cookies) {
@@ -550,7 +555,9 @@ async function deletar() {
       naoAchados ? `${naoAchados} já não existiam` : '',
       falhas ? `${falhas} falharam` : ''
     ].filter(Boolean).join(', ');
-    setStatus(`🧹 ${ok} cookies deletados de ${alvos.length} domínios${extras ? ` (${extras})` : ''}.`, 'ok');
+    const semCopia = copiaInterna ? '' :
+      ' ⚠️ O backup não coube dentro da extensão: "Desfazer última limpeza" não vai funcionar, só o arquivo baixado.';
+    setStatus(`🧹 ${ok} cookies deletados de ${alvos.length} domínios${extras ? ` (${extras})` : ''}.${semCopia}`, semCopia ? 'erro' : 'ok');
     await analisar();
   } catch (e) {
     console.error(e);
@@ -596,7 +603,26 @@ async function restaurarArquivo(arquivo) {
   catch { return setStatus('Arquivo de backup inválido.', 'erro'); }
   const lista = Array.isArray(dados) ? dados : dados.cookies;
   if (!Array.isArray(lista)) return setStatus('Backup sem lista de cookies.', 'erro');
+  // Restaurar grava cookies de sessão em qualquer domínio: um arquivo de
+  // origem desconhecida conseguiria te logar numa conta que não é sua.
+  if (!confirm(
+    `Restaurar ${lista.length} cookies de "${arquivo.name}"?\n\n` +
+    'Só continue se este arquivo foi gerado por você nesta extensão. ' +
+    'Um backup de outra pessoa implantaria as sessões dela no seu navegador.'
+  )) return;
   await restaurarLista(lista);
+}
+
+async function apagarBackupGuardado() {
+  try {
+    const { ultimoBackup } = (await chrome.storage.local.get('ultimoBackup')) || {};
+    if (!ultimoBackup) return setStatus('Não há backup guardado nesta extensão.');
+    if (!confirm('Apagar o backup guardado dentro da extensão?\n\nVocê perde o "Desfazer última limpeza".')) return;
+    await chrome.storage.local.remove('ultimoBackup');
+    setStatus('Backup guardado apagado. As sessões que estavam nele não existem mais aqui.', 'ok');
+  } catch {
+    setStatus('Não foi possível apagar: recarregue a extensão em brave://extensions.', 'erro');
+  }
 }
 
 async function restaurarUltimo() {
@@ -714,6 +740,7 @@ $('corpo').addEventListener('change', (e) => {
 
 $('deletar').addEventListener('click', deletar);
 $('restaurar-ultimo').addEventListener('click', restaurarUltimo);
+$('apagar-backup').addEventListener('click', apagarBackupGuardado);
 $('restaurar').addEventListener('click', () => $('arquivo').click());
 $('arquivo').addEventListener('change', (e) => {
   if (e.target.files[0]) restaurarArquivo(e.target.files[0]);

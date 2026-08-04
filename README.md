@@ -49,10 +49,19 @@ Consequences worth taking seriously:
   password file: don't sync it, don't attach it to an issue, don't paste it into a chat, and
   delete it once you're satisfied with the cleanup.
 - A second copy is kept inside the extension (`chrome.storage.local`) so *Undo last cleanup*
-  still works if the download was blocked. It is unencrypted and stays until overwritten.
+  still works if the download was blocked. It is unencrypted, it survives clearing your cache
+  and history, and it normally only disappears when the extension is uninstalled. Use
+  **Delete stored backup** to wipe it as soon as you no longer need the undo.
+- If the backup is larger than ~4 MB the internal copy is skipped — the panel now says so
+  explicitly, because otherwise you would believe you had an undo you don't have.
 - `cookies-backup-*.json` is in `.gitignore` so it never reaches a commit by accident.
 
 If you don't want either copy, untick **Backup before deleting** — you just lose the undo.
+
+Restoring works the other way round: a backup file writes session cookies into your browser,
+so importing someone else's file would plant *their* sessions in *your* browser. The file
+picker asks for confirmation, but the real rule is simple — only restore files you generated
+yourself.
 
 ## Safety
 
@@ -85,7 +94,7 @@ after a reload.
 |---|---|
 | `cookies` | read and delete cookies |
 | `history` | find out which sites you visited and how often |
-| `storage` | keep the protected list and the last-cleanup date |
+| `storage` | keep the protected list, the last-cleanup date, **and the undo copy of the backup — which contains cookie values** |
 | `browsingData` | clear site data (only when that option is ticked) |
 | `<all_urls>` | without it the browser only hands over cookies for the active tab |
 
@@ -114,9 +123,15 @@ independent sites. So IPv4, IPv6, `localhost` and single-label hosts are kept wh
 a list of public suffixes (`co.uk`, `com.br`) and of hosting domains where each subdomain is
 its own site (`github.io`, `vercel.app`, `netlify.app`); plus a generic ccTLD rule.
 
-This is not the full [Public Suffix List](https://publicsuffix.org/). When in doubt the
-extension groups **less**, keeping hosts separate — erring toward showing two rows is
-harmless; erring toward merging independent sites would delete data you never chose.
+This is not the full [Public Suffix List](https://publicsuffix.org/), and it is worth being
+precise about the limitation: for a **known** hosting domain each subdomain stays its own row,
+but for a multi-tenant platform that is *not* on the list the fallback keeps the last two
+labels and therefore groups its subdomains together. So the rule is "keep hosts separate
+wherever we can recognise the case", not a guarantee for every platform that exists.
+
+Erring toward showing two rows is harmless; erring toward merging independent sites would
+delete data you never chose. If you hit a platform that groups wrongly, adding it to
+`SUFIXOS_PRIVADOS` is a one-line fix — issues welcome.
 
 ## License
 
